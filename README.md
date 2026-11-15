@@ -3,6 +3,11 @@
 Turn Claude Code into a web security auditor. Point it at a live site, with or without a login,
 and get back a short list of verified vulnerabilities, each with evidence and a fix.
 
+This is designed to complement [Cloudflare's security-audit skill](https://github.com/cloudflare/security-audit-skill),
+which reads your source code to find vulnerabilities. web-audit covers the final leg: it tests the
+**running** site to confirm those issues are actually reachable, and to verify that fixes and
+deployments landed successfully — the part source review alone can't check.
+
 > **Only test sites you own or have written permission to test.**
 > The skill won't send a single request until you've recorded who approved the test.
 
