@@ -8,6 +8,14 @@ which reads your source code to find vulnerabilities. web-audit covers the final
 **running** site to confirm those issues are actually reachable, and to verify that fixes and
 deployments landed successfully — the part source review alone can't check.
 
+```mermaid
+flowchart LR
+    A[Cloudflare security-audit<br/>reads source code] --> B[Fix vulnerabilities]
+    B --> C[Deploy]
+    C --> D[web-audit<br/>tests the running site]
+    D -->|confirms reachable<br/>+ verifies deploy| B
+```
+
 > **Only test sites you own or have written permission to test.**
 > The skill won't send a single request until you've recorded who approved the test.
 
