@@ -8,13 +8,7 @@ which reads your source code to find vulnerabilities. web-audit covers the final
 **running** site to confirm those issues are actually reachable, and to verify that fixes and
 deployments landed successfully — the part source review alone can't check.
 
-```mermaid
-flowchart LR
-    A[Cloudflare security-audit<br/>reads source code] --> B[Fix vulnerabilities]
-    B --> C[Deploy]
-    C --> D[web-audit<br/>tests the running site]
-    D -->|confirms reachable<br/>+ verifies deploy| B
-```
+<p align="center"><img src="assets/lifecycle.svg" alt="Cloudflare security-audit reads source code, then fix, deploy, then web-audit tests the running site and loops back to fixes" width="100%"></p>
 
 > **Only test sites you own or have written permission to test.**
 > The skill won't send a single request until you've recorded who approved the test.
@@ -81,6 +75,8 @@ You can also just ask in plain English, e.g. *"audit staging, no login"*.
 ---
 
 ## How it works
+
+<p align="center"><img src="assets/architecture.svg" alt="The six phases: scope gate, recon, unauthenticated checks, authenticated checks, verification, report" width="420"></p>
 
 Every audit runs through the same six steps.
 
