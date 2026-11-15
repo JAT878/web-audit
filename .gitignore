@@ -1,0 +1,21 @@
+# Live credentials — never commit
+sessions.json
+state-*.json
+
+# Audit output (findings, request logs, reports)
+audit-*/
+**/findings.json
+**/requests.jsonl
+**/recon*.json
+**/authz-results.json
+
+# Python
+__pycache__/
+*.pyc
+.venv/
+venv/
+
+# OS / editor
+.DS_Store
+.idea/
+.vscode/

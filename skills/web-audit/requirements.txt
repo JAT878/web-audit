@@ -1,0 +1,11 @@
+# Required
+requests>=2.28
+
+# Optional — used automatically when installed, with built-in fallbacks
+beautifulsoup4>=4.12   # more tolerant HTML parsing in recon
+lxml>=4.9              # faster parser for beautifulsoup4
+jsonschema>=4.18       # full JSON Schema validation of findings.json
+
+# Optional — only for capture_session.py (browser login). Then run:
+#   python3 -m playwright install chromium
+playwright>=1.40

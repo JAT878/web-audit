@@ -1,0 +1,18 @@
+{
+  "user_a": {
+    "cookies": {
+      "session": "tok-alice-7f3a9c"
+    },
+    "identity_markers": [
+      "alice@example.com"
+    ]
+  },
+  "user_b": {
+    "cookies": {
+      "session": "tok-bob-2b8e1d"
+    },
+    "identity_markers": [
+      "bob@example.com"
+    ]
+  }
+}

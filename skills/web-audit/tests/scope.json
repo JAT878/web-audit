@@ -1,0 +1,18 @@
+{
+  "target": "http://127.0.0.1:8088",
+  "allowed_hosts": [
+    "127.0.0.1"
+  ],
+  "environment": "test",
+  "authorization": {
+    "authorized_by": "John (owner of test app)",
+    "reference": "local test",
+    "date": "2026-11-15"
+  },
+  "mode": "both",
+  "max_rps": 10,
+  "allow_state_changing": false,
+  "excluded_paths": [
+    "/logout"
+  ]
+}

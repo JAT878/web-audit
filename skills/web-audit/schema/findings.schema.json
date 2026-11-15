@@ -1,0 +1,67 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "web-audit findings",
+  "type": "object",
+  "required": ["target", "generated_at", "findings"],
+  "properties": {
+    "target": { "type": "string" },
+    "generated_at": { "type": "string" },
+    "findings": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": ["id", "title", "severity", "confidence", "status", "category",
+                     "auth_context", "url", "method", "description", "evidence", "source"],
+        "properties": {
+          "id": { "type": "string", "pattern": "^[A-Z]+-[a-z0-9-]+$",
+                  "description": "Stable id: CATEGORY-PREFIX + slug, e.g. HDR-missing-csp, AUTHZ-idor-orders" },
+          "title": { "type": "string" },
+          "severity": { "enum": ["critical", "high", "medium", "low", "info"] },
+          "confidence": { "enum": ["confirmed", "firm", "tentative"] },
+          "status": { "enum": ["candidate", "verified", "rejected"] },
+          "category": { "enum": [
+            "broken-access-control", "authentication", "session-management",
+            "cryptographic-failure", "injection", "security-misconfiguration",
+            "sensitive-data-exposure", "information-disclosure", "cors", "csrf",
+            "clickjacking", "open-redirect", "vulnerable-component", "business-logic", "other"
+          ] },
+          "auth_context": { "enum": ["anonymous", "user_a", "user_b", "admin", "cross-user", "cross-role"] },
+          "url": { "type": "string" },
+          "method": { "type": "string" },
+          "description": { "type": "string" },
+          "impact": { "type": "string" },
+          "evidence": {
+            "type": "object",
+            "required": ["request"],
+            "properties": {
+              "request": { "type": "string" },
+              "response_status": { "type": "integer" },
+              "response_excerpt": { "type": "string", "maxLength": 2000 },
+              "notes": { "type": "string" }
+            }
+          },
+          "reproduction": {
+            "type": "object",
+            "properties": {
+              "steps": { "type": "array", "items": { "type": "string" } },
+              "curl": { "type": "string" }
+            }
+          },
+          "remediation": { "type": "string" },
+          "cwe": { "type": "string", "pattern": "^CWE-[0-9]+$" },
+          "references": { "type": "array", "items": { "type": "string" } },
+          "source": { "type": "string", "description": "script name or 'manual'" },
+          "verification": {
+            "type": "object",
+            "properties": {
+              "by": { "type": "string" },
+              "at": { "type": "string" },
+              "result_notes": { "type": "string" }
+            }
+          },
+          "rejection_reason": { "type": "string" }
+        }
+      }
+    }
+  }
+}
