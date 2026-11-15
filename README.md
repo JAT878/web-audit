@@ -74,7 +74,8 @@ Every audit runs through the same six steps.
 1. **Scope.** You confirm the site, the hosts allowed, who approved the test, and any pages to avoid
    (logout, payments, contact forms). This is saved to `scope.json`.
 2. **Map the site.** It crawls pages, reads `robots.txt` and the sitemap, and pulls API endpoints out of
-   the site's JavaScript.
+   the site's JavaScript. For single-page apps it can render pages in a real browser, or import a HAR
+   file you record by clicking through the app yourself.
 3. **Test the public side.** Headers, cookies, TLS, CORS, exposed files, error pages and more.
 4. **Test logged-in areas.** It replays each user's pages as a different user and as a logged-out visitor
    to catch data leaks.
@@ -158,6 +159,7 @@ returning it.
   `phpinfo`, and debug consoles for Laravel, Symfony, Spring and ASP.NET
 - GraphQL schemas left open
 - Weak login tokens (unsigned JWTs, tokens that never expire, sensitive data inside tokens)
+- Reflected input (possible XSS) and database errors (possible SQL injection) across every parameter it finds
 
 **Logged-in areas**
 

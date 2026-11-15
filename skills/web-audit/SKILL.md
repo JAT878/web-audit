@@ -80,12 +80,27 @@ Validate: `python3 scripts/scope_check.py <out>/scope.json` — fix anything it 
 ## Phase 1 — Recon (map the attack surface)
 
 ```
-python3 scripts/recon.py --scope <out>/scope.json --out <out> [--session user_a] [--max-pages 150]
+python3 scripts/recon.py --scope <out>/scope.json --out <out> [--session user_a] [--max-pages 150] [--browser]
 ```
 Produces `<out>/recon.json`: pages, forms (method, action, inputs), JS bundles, API endpoints
 mined from JS, robots/sitemap entries, technology fingerprint, cookies set, off-scope links.
 Run it once anonymously and once per session in auth mode — the diff between anonymous and
 authenticated surface is your list of endpoints that *should* require auth.
+
+`--browser` adds a JS-rendering pass (Playwright): it renders each page in a headless browser and
+records links and XHR/fetch calls that only appear after JavaScript runs — the right choice for
+single-page apps. It needs Playwright installed and falls back to the static crawl with a note if
+it isn't; `recon.json.browser_crawl` holds what it found.
+
+**HAR import (optional, instead of or alongside crawling).** If the app is JS-heavy or behind flows the
+crawler can't reach, click through it in your browser, export the traffic as a HAR (DevTools > Network),
+then:
+```
+python3 scripts/har_import.py --scope <out>/scope.json --out <out> --har <file>.har
+```
+This writes `<out>/endpoints.txt` (in-scope GET URLs) for `authz_replay.py --endpoints`, and
+`har-endpoints.json` (all in-scope requests, with non-GET ones listed for manual review). It only
+extracts targets — it never replays anything, and secrets in the HAR stay in the HAR.
 
 Then **read** `recon.json` and reason about it: what is the app, what are the sensitive
 objects (orders, invoices, users, files), where are IDs in URLs or JSON, what frameworks are
@@ -98,11 +113,16 @@ to `<out>/notes.md`. This drives which manual checks matter in Phases 2–3.
 python3 scripts/passive_checks.py --scope <out>/scope.json --out <out>
 python3 scripts/exposed_files.py  --scope <out>/scope.json --out <out>
 python3 scripts/extra_checks.py   --scope <out>/scope.json --out <out> [--sessions <out>/sessions.json --session user_a]
+python3 scripts/param_probe.py    --scope <out>/scope.json --out <out> [--sessions <out>/sessions.json --session user_a]
 python3 scripts/authz_replay.py   --scope <out>/scope.json --out <out> --anon-only   # auth mode only
 ```
 `extra_checks.py` covers GraphQL introspection (sent as GET) and JWT weaknesses — it decodes
 tokens from session material and Set-Cookie headers (never forges or verifies them) and flags
 `alg: none`, missing or very long expiry, and sensitive claims.
+`param_probe.py` sends ONE benign marker per GET parameter found in recon and reports *indicators*:
+input reflected unescaped in HTML (possible XSS) and database errors (possible SQL injection). These
+are tentative by design — confirm the context by hand. It never sends working payloads or extraction
+strings; for anything it flags, verify safely or hand to a developer rather than escalating the probe.
 Covers: TLS and HSTS, HTTP→HTTPS, security headers, cookie flags, CORS misconfig
 (reflected / null origin with credentials), clickjacking, version disclosure, verbose errors
 and stack traces, directory listing, exposed files (.git, .env, backups, phpinfo, actuator,

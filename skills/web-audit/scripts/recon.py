@@ -88,6 +88,51 @@ def norm(url: str) -> str:
     return url
 
 
+def browser_crawl(scope, start_urls, session_entry, max_pages):
+    """Optional JS-rendering pass. Renders pages in a headless browser and records the links and the
+    XHR/fetch URLs that only appear after JavaScript runs. Returns (links, api_urls, ok, reason).
+    Never raises — if Playwright or a browser is missing, it reports why and the caller falls back."""
+    try:
+        from playwright.sync_api import sync_playwright
+    except ImportError:
+        return set(), set(), False, "playwright not installed (pip install playwright && python3 -m playwright install chromium)"
+    links, api = set(), set()
+    try:
+        with sync_playwright() as p:
+            try:
+                browser = p.chromium.launch(headless=True)
+            except Exception:
+                browser = p.chromium.launch(headless=True, executable_path="/usr/bin/google-chrome")
+            ctx = browser.new_context()
+            from common import apply_session
+            if session_entry and session_entry.get("storage_state") and os.path.exists(session_entry["storage_state"]):
+                ctx = browser.new_context(storage_state=session_entry["storage_state"])
+            page = ctx.new_page()
+            page.on("request", lambda req: api.add(req.url) if req.resource_type in ("xhr", "fetch") else None)
+            visited = set()
+            queue = list(start_urls)
+            while queue and len(visited) < max_pages:
+                url = queue.pop(0)
+                if url in visited or not scope.in_scope(url) or scope.excluded(url):
+                    continue
+                visited.add(url)
+                try:
+                    page.goto(url, wait_until="networkidle", timeout=15000)
+                except Exception:
+                    continue
+                for a_tag in page.query_selector_all("a[href]"):
+                    href = a_tag.get_attribute("href")
+                    if href:
+                        full = urljoin(url, href)
+                        links.add(full)
+                        if scope.in_scope(full) and full not in visited:
+                            queue.append(norm(full))
+            browser.close()
+    except Exception as e:
+        return links, api, False, f"browser crawl error: {str(e)[:120]}"
+    return links, api, True, f"rendered {len(links)} link(s), {len(api)} XHR/fetch URL(s)"
+
+
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--scope", required=True)
@@ -97,6 +142,7 @@ def main():
     ap.add_argument("--max-pages", type=int, default=150)
     ap.add_argument("--max-js", type=int, default=40)
     ap.add_argument("--seed", action="append", default=[], help="extra start URLs")
+    ap.add_argument("--browser", action="store_true", help="also do a JS-rendering crawl (needs Playwright); falls back to the normal crawl if unavailable")
     a = ap.parse_args()
 
     scope = load_scope_or_exit(a.scope)
@@ -192,6 +238,24 @@ def main():
         if "sourceMappingURL=" in r.text[-500:]:
             endpoints.add("[sourcemap] " + js + " references a source map")
 
+    browser_note = None
+    browser_links, browser_api = [], []
+    if a.browser:
+        b_links, b_api, ok, reason = browser_crawl(scope, [p["url"] for p in pages][:a.max_pages] or start,
+                                                   sessions.get(a.session) if a.session else None, a.max_pages)
+        browser_note = reason
+        if ok:
+            new_pages = {urlparse(u).path for u in b_links if scope.in_scope(u)} - {urlparse(p["url"]).path for p in pages}
+            browser_links = sorted(u for u in b_links if scope.in_scope(u))
+            browser_api = sorted(b_api)
+            for ep in b_api:
+                if scope.in_scope(ep):
+                    rel = ep[len(scope.target):] if ep.startswith(scope.target) else ep
+                    endpoints.add(rel if rel.startswith("/") else ep)
+            print(f"Browser crawl: {reason}; {len(new_pages)} path(s) the static crawl missed")
+        else:
+            print(f"Browser crawl skipped: {reason} — using static crawl results only")
+
     for name_c in cookies_seen:
         for k, v in FINGERPRINT_COOKIES.items():
             if name_c.startswith(k):
@@ -200,6 +264,8 @@ def main():
         tech.add(f"{k}: {v}")
 
     out = {
+        "browser_crawl": {"used": bool(a.browser), "note": browser_note,
+                          "links": browser_links[:500], "api_urls": browser_api[:500]},
         "generated_at": now_iso(), "session": name, "target": scope.target,
         "pages": pages, "forms": forms, "scripts": sorted(scripts),
         "js_endpoints": sorted(endpoints), "js_absolute_urls": sorted(abs_urls),

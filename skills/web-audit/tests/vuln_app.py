@@ -56,8 +56,15 @@ class H(BaseHTTPRequestHandler):
             return self.send(200, json.dumps({"data": {"__schema": {"queryType": {"name": "Query"},
                              "types": [{"name": "Query"}, {"name": "User"}, {"name": "Order"}, {"name": "AdminSettings"}]}}}), "application/json")
         if p == "/":
-            return self.send(200, self.page("Home", "<a href='/about'>About</a> <a href='/login'>Login</a> <a href='/dashboard'>Dashboard</a>"),
+            return self.send(200, self.page("Home", "<a href='/about'>About</a> <a href='/login'>Login</a> <a href='/dashboard'>Dashboard</a> "
+                             "<a href='/search?q=test'>Search</a> <a href='/?id=1'>Item 1</a>"
+                             "<div id='app'></div><script>document.getElementById('app').innerHTML=\"<a href='/js-only'>JS page</a>\";</script>"),
                              extra={"Set-Cookie": f"guest_token={WEAK_JWT}; Path=/"})
+        if p == "/search":
+            term = q.get("q", [""])[0]
+            return self.send(200, self.page("Search", f"<p>Results for: {term}</p>"))  # reflected unescaped
+        if p == "/js-only":
+            return self.send(200, self.page("JS Only", "<p>Reachable only via a JS-injected link.</p>"))
         if p == "/about":
             return self.send(200, self.page("About", "We sell widgets."))
         if p == "/login":
