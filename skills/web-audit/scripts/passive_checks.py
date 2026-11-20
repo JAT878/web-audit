@@ -12,7 +12,8 @@ from datetime import datetime, timezone
 from urllib.parse import urlparse
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
-from common import Client, Findings, describe_request, excerpt, load_scope_or_exit, load_sessions, shash  # noqa: E402
+from common import (Client, Findings, asset_of, cap_fields, describe_request, excerpt,  # noqa: E402
+                    id_shape_of, load_scope_or_exit, load_sessions, shash)
 
 SESSION_COOKIE = re.compile(r"(?i)(sess|sid|auth|token|jwt|login|remember|\.aspnetcore|laravel_session|phpsessid|jsessionid|connect\.sid)")
 STACK_TRACE = re.compile(
@@ -169,16 +170,26 @@ def header_checks(scope, client, F, pages):
             if k in h and VERSION_RE.search(h[k]):
                 disclosure[k] = (h[k], r)
         for sc in set_cookies(r):
-            name = sc.split("=", 1)[0].strip()
-            low = sc.lower()
+            # Parse cookie attributes by splitting on ';' and comparing attribute NAMES
+            # case-insensitively, so 'a=b;Secure;HttpOnly' is not a false positive and a
+            # cookie VALUE containing 'httponly' is not a false negative (C3).
+            parts = sc.split(";")
+            name = parts[0].split("=", 1)[0].strip()
+            attrs = {}
+            for seg in parts[1:]:
+                seg = seg.strip()
+                if not seg:
+                    continue
+                an, _, av = seg.partition("=")
+                attrs[an.strip().lower()] = av.strip()
             probs = []
-            if https and "; secure" not in low and not low.endswith("secure"):
+            if https and "secure" not in attrs:
                 probs.append("Secure")
-            if "httponly" not in low:
+            if "httponly" not in attrs:
                 probs.append("HttpOnly")
-            if "samesite" not in low:
+            if "samesite" not in attrs:
                 probs.append("SameSite")
-            elif "samesite=none" in low and "secure" not in low:
+            elif attrs.get("samesite", "").lower() == "none" and "secure" not in attrs:
                 probs.append("SameSite=None without Secure")
             if probs:
                 cookie_issues.setdefault(name, (set(), r, sc))[0].update(probs)
@@ -213,7 +224,8 @@ def header_checks(scope, client, F, pages):
               category="information-disclosure", auth_context="anonymous", url=r.url,
               description=f"{k}: {val}", impact="Exact versions let attackers match known CVEs quickly. Check whether this version is still supported.",
               evidence={"request": describe_request(r), "response_status": r.status_code, "notes": f"{k}: {val}"},
-              remediation=f"Remove or genericise the {k} header; keep the component patched.", cwe="CWE-200", source="passive_checks")
+              remediation=f"Remove or genericise the {k} header; keep the component patched.", cwe="CWE-200", source="passive_checks",
+              **cap_fields(chain_role="disclosure"))  # fingerprint only — no chain grant
     for name, (probs, r, raw) in cookie_issues.items():
         is_sess = bool(SESSION_COOKIE.search(name))
         sev = "medium" if is_sess and ("HttpOnly" in probs or "Secure" in probs) else "low"
@@ -240,18 +252,19 @@ def cors_checks(scope, client, F, urls):
                 continue
             acao = r.headers.get("Access-Control-Allow-Origin", "")
             acac = r.headers.get("Access-Control-Allow-Credentials", "").lower() == "true"
-            if acao == o or (acao == "*" and acac):
-                sev = "high" if acac else "low"
+            # Only reflected-origin or null-origin WITH credentials is exploitable. 'ACAO: *'
+            # with credentials is forbidden by browsers, so it is NOT reported (C2).
+            if acao == o and acac:
                 F.add(id=f"CORS-reflect-{'null' if o == 'null' else 'origin'}-{shash(url)}",
-                      title=f"CORS allows {'null' if o == 'null' else 'arbitrary'} origin{' with credentials' if acac else ''}",
-                      severity=sev, confidence="firm", category="cors", auth_context="anonymous", url=url,
-                      description=f"Origin '{o}' is reflected in Access-Control-Allow-Origin" + (" and credentials are allowed." if acac else " (credentials not allowed)."),
-                      impact=("Any website can read this endpoint's responses using the victim's session." if acac
-                              else "Only matters if the endpoint returns non-public data without cookies (e.g. IP-restricted)."),
+                      title=f"CORS allows {'null' if o == 'null' else 'arbitrary'} origin with credentials",
+                      severity="high", confidence="firm", category="cors", auth_context=client.name, url=url,
+                      description=f"Origin '{o}' is reflected in Access-Control-Allow-Origin and credentials are allowed.",
+                      impact="Any website can read this endpoint's responses using the victim's session.",
                       evidence={"request": describe_request(r), "response_status": r.status_code,
                                 "notes": f"Access-Control-Allow-Origin: {acao}; Access-Control-Allow-Credentials: {r.headers.get('Access-Control-Allow-Credentials', '')}"},
                       remediation="Use an explicit allow-list of trusted origins; never reflect Origin or allow 'null' with credentials.",
-                      cwe="CWE-942", source="passive_checks")
+                      cwe="CWE-942", source="passive_checks",
+                      **cap_fields(chain_role="standalone"))  # browser-forced victim action — not a clean chain link
                 break
 
 
@@ -276,7 +289,9 @@ def error_checks(scope, client, F):
                   impact="Stack traces reveal file paths, frameworks, queries and sometimes secrets; they help attackers craft exploits.",
                   evidence={"request": describe_request(r), "response_status": r.status_code, "response_excerpt": excerpt(r.text[i:i + 700])},
                   remediation="Disable debug mode / detailed errors in this environment and return generic error pages.",
-                  cwe="CWE-209", source="passive_checks")
+                  cwe="CWE-209", source="passive_checks",
+                  **cap_fields(grants=["knowledge:internal-host"], chain_role="disclosure",
+                               assets=[asset_of(url)], id_shape=id_shape_of(url)))
 
 
 def dirlist_checks(scope, client, F):
@@ -304,20 +319,25 @@ def main():
     sessions = load_sessions(a.sessions)
     c = Client(scope, a.out, "anonymous")
     F = Findings(a.out, scope.target)
-    pages = html_pages(a.out, scope)
-    if not a.skip_tls:
-        tls_checks(scope, c, F)
-    https_redirect(scope, c, F)
-    header_checks(scope, c, F, pages)
-    cors_targets = [scope.target + "/"] + json_endpoints(a.out, scope)
-    cors_checks(scope, c, F, cors_targets)
-    if a.session:
-        cs = Client(scope, a.out, a.session, sessions.get(a.session))
-        cors_checks(scope, cs, F, cors_targets)
-    error_checks(scope, c, F)
-    dirlist_checks(scope, c, F)
-    F.save()
-    print(f"Passive checks: {c.count} requests, {F.added} new candidate findings -> {F.path}")
+    clients = [c]
+    try:
+        pages = html_pages(a.out, scope)
+        if not a.skip_tls:
+            tls_checks(scope, c, F)
+        https_redirect(scope, c, F)
+        header_checks(scope, c, F, pages)
+        cors_targets = [scope.target + "/"] + json_endpoints(a.out, scope)
+        cors_checks(scope, c, F, cors_targets)
+        if a.session:
+            cs = Client(scope, a.out, a.session, sessions.get(a.session))
+            clients.append(cs)
+            cors_checks(scope, cs, F, cors_targets)
+        error_checks(scope, c, F)
+        dirlist_checks(scope, c, F)
+    finally:
+        F.save()
+        reqs = sum(cl.count for cl in clients)
+        print(f"Passive checks: {reqs} requests, {F.added} new candidate findings -> {F.path}")
 
 
 if __name__ == "__main__":

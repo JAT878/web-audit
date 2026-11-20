@@ -8,7 +8,8 @@ import sys
 import uuid
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
-from common import Client, Findings, describe_request, excerpt, load_scope_or_exit, slug  # noqa: E402
+from common import (Client, Findings, asset_of, cap_fields, describe_request, excerpt,  # noqa: E402
+                    id_shape_of, load_scope_or_exit, slug)
 
 # (path, signature regex that must match the body to confirm, severity, title, category)
 PROBES = [
@@ -91,6 +92,21 @@ def looks_like_baseline(r, base):
     return False
 
 
+def caps_for(path, cat):
+    """Capability fields for an exposed-file finding (see CONTRACT guidance table).
+    Secrets-bearing files grant knowledge:secret; schema docs grant knowledge:schema;
+    every disclosure gets chain_role 'disclosure'."""
+    low = path.lower()
+    if any(s in low for s in ("swagger", "openapi", "api-docs", "graphql")):
+        grants = ["knowledge:schema"]
+    elif cat == "sensitive-data-exposure":
+        grants = ["knowledge:secret"]
+    else:
+        grants = []
+    return cap_fields(grants=grants, chain_role="disclosure",
+                      assets=[asset_of(path)], id_shape=id_shape_of(path))
+
+
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--scope", required=True)
@@ -100,38 +116,41 @@ def main():
     scope = load_scope_or_exit(a.scope)
     c = Client(scope, a.out, "anonymous")
     F = Findings(a.out, scope.target)
-    base = soft404_baseline(c, scope)
-    probes = list(PROBES)
-    if a.extra:
-        with open(a.extra, encoding="utf-8") as f:
-            for line in f:
-                p = line.strip()
-                if p and not p.startswith("#"):
-                    probes.append(("/" + p.lstrip("/"), None, "info", f"Interesting path responds: /{p.lstrip('/')}", "information-disclosure"))
     hits = 0
-    for path, sig, sev, title, cat in probes:
-        url = scope.target + path
-        if scope.excluded(url):
-            continue
-        r = c.get(url, stream=False)
-        if r is None or r.status_code != 200 or looks_like_baseline(r, base):
-            continue
-        body = r.content[:20000]
-        text = body.decode("utf-8", "replace")
-        if sig:
-            target_text = text if not sig.startswith("^PK") and not sig.startswith("^\\x1f") else body.decode("latin-1")
-            if not re.search(sig, target_text):
+    try:
+        base = soft404_baseline(c, scope)
+        probes = list(PROBES)
+        if a.extra:
+            with open(a.extra, encoding="utf-8") as f:
+                for line in f:
+                    p = line.strip()
+                    if p and not p.startswith("#"):
+                        probes.append(("/" + p.lstrip("/"), None, "info", f"Interesting path responds: /{p.lstrip('/')}", "information-disclosure"))
+        for path, sig, sev, title, cat in probes:
+            url = scope.target + path
+            if scope.excluded(url):
                 continue
-        hits += 1
-        F.add(id=f"EXPOSED-{slug(path, 36)}", title=title, severity=sev,
-              confidence="confirmed" if sig else "tentative", category=cat, auth_context="anonymous", url=url,
-              description=f"{path} is publicly reachable (HTTP 200, {len(r.content)} bytes)" + (" and its content matches the expected file format." if sig else "."),
-              impact="Attackers can read source, configuration or secrets directly." if cat == "sensitive-data-exposure" else "Gives attackers internal details that make other attacks easier.",
-              evidence={"request": describe_request(r), "response_status": 200,
-                        "response_excerpt": excerpt(text if text.isprintable() or "\n" in text else repr(body[:200]), 400)},
-              remediation=FIX[cat], cwe="CWE-538" if cat == "sensitive-data-exposure" else "CWE-200", source="exposed_files")
-    F.save()
-    print(f"Exposed files: {len(probes)} probes, {hits} hits, {F.added} new candidate findings -> {F.path}")
+            r = c.get(url, stream=False)
+            if r is None or r.status_code != 200 or looks_like_baseline(r, base):
+                continue
+            body = r.content[:20000]
+            text = body.decode("utf-8", "replace")
+            if sig:
+                target_text = text if not sig.startswith("^PK") and not sig.startswith("^\\x1f") else body.decode("latin-1")
+                if not re.search(sig, target_text):
+                    continue
+            hits += 1
+            F.add(id=f"EXPOSED-{slug(path, 36)}", title=title, severity=sev,
+                  confidence="confirmed" if sig else "tentative", category=cat, auth_context="anonymous", url=url,
+                  description=f"{path} is publicly reachable (HTTP 200, {len(r.content)} bytes)" + (" and its content matches the expected file format." if sig else "."),
+                  impact="Attackers can read source, configuration or secrets directly." if cat == "sensitive-data-exposure" else "Gives attackers internal details that make other attacks easier.",
+                  evidence={"request": describe_request(r), "response_status": 200,
+                            "response_excerpt": excerpt(text if text.isprintable() or "\n" in text else repr(body[:200]), 400)},
+                  remediation=FIX[cat], cwe="CWE-538" if cat == "sensitive-data-exposure" else "CWE-200", source="exposed_files",
+                  **caps_for(path, cat))
+    finally:
+        F.save()
+        print(f"Exposed files: {c.count} requests, {hits} hits, {F.added} new candidate findings -> {F.path}")
 
 
 if __name__ == "__main__":
