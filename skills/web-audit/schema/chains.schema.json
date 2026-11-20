@@ -1,0 +1,93 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://web-audit/schema/chains.schema.json",
+  "title": "web-audit attack chains",
+  "description": "Canonical shape of chains.json: correlate.py writes it; report.py and validate_findings.py read it. Each chain references finding ids from findings.json and carries the candidate->verified->rejected lifecycle plus a COMBINED-impact severity.",
+  "type": "object",
+  "required": ["target", "generated_at", "chains"],
+  "additionalProperties": false,
+  "properties": {
+    "target": { "type": "string" },
+    "generated_at": { "type": "string" },
+    "chains": {
+      "type": "array",
+      "items": { "$ref": "#/$defs/chain" }
+    }
+  },
+  "$defs": {
+    "severity": { "enum": ["critical", "high", "medium", "low", "info"] },
+    "status": { "enum": ["candidate", "verified", "rejected"] },
+    "confidence": { "enum": ["tentative", "firm", "confirmed"] },
+    "phase": {
+      "enum": [
+        "information-disclosure",
+        "authorization-weakness",
+        "privilege-boundary-failure",
+        "session-weakness",
+        "injection",
+        "business-logic"
+      ]
+    },
+    "pattern": {
+      "enum": [
+        "enumerate-then-idor",
+        "schema-to-bola",
+        "disclosure-to-takeover",
+        "reset-flow-bypass",
+        "horizontal-to-vertical",
+        "xss-to-session",
+        "fixation-to-takeover",
+        "tenant-break"
+      ]
+    },
+    "step": {
+      "type": "object",
+      "required": ["step", "phase", "finding"],
+      "additionalProperties": false,
+      "properties": {
+        "step": { "type": "integer", "minimum": 1 },
+        "phase": { "$ref": "#/$defs/phase" },
+        "finding": {
+          "type": "string",
+          "pattern": "^[A-Z]+-[a-z0-9-]+$",
+          "description": "Must be the id of a finding that exists in findings.json."
+        },
+        "grants": { "type": "array", "items": { "type": "string" } },
+        "requires": { "type": "array", "items": { "type": "string" } },
+        "narrative": { "type": "string" }
+      }
+    },
+    "chain": {
+      "type": "object",
+      "required": ["id", "title", "status", "confidence", "severity", "kill_chain", "combined_impact"],
+      "additionalProperties": false,
+      "properties": {
+        "id": { "type": "string", "pattern": "^CHAIN-[a-z0-9-]+$" },
+        "title": { "type": "string" },
+        "status": { "$ref": "#/$defs/status" },
+        "confidence": { "$ref": "#/$defs/confidence" },
+        "severity": { "$ref": "#/$defs/severity" },
+        "kill_chain": {
+          "type": "array",
+          "minItems": 2,
+          "items": { "$ref": "#/$defs/step" }
+        },
+        "combined_impact": { "type": "string" },
+        "preconditions": { "type": "string" },
+        "remediation_priority": { "type": "string" },
+        "pattern": { "$ref": "#/$defs/pattern" },
+        "verification": {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "executed": { "type": "boolean" },
+            "actor_path": { "type": "array", "items": { "type": "string" } },
+            "steps": { "type": "array" },
+            "evidence_refs": { "type": "array", "items": { "type": "string" } },
+            "notes": { "type": "string" }
+          }
+        }
+      }
+    }
+  }
+}
