@@ -72,7 +72,7 @@ class H(BaseHTTPRequestHandler):
         if p == "/robots.txt":
             return self.send(200, "User-agent: *\nDisallow: /uploads/\n", "text/plain")
         if p == "/static/app.js":
-            return self.send(200, "fetch('/api/me');const o='/api/orders/1001';const k='/api/admin/users';const f='/forgot?email=';", "application/javascript")
+            return self.send(200, "fetch('/api/me');const o='/api/orders/1001';const k='/api/admin/users';const f='/forgot?email=';const ap='/admin/panel';", "application/javascript")
         if p == "/forgot":
             email = q.get("email", [""])[0]
             known = any(usr["email"] == email for usr in USERS.values())
@@ -89,6 +89,32 @@ class H(BaseHTTPRequestHandler):
                 # BOLA: JSON API returns any order with no auth / owner check (CWE-639)
                 return self.send(200, json.dumps({"id": oid, "owner": owner, "detail": text}), "application/json")
             return self.send(404, json.dumps({"error": "not found"}), "application/json")
+        if p == "/admin/panel":
+            # Trusts the unsigned JWT's role claim (CWE-347): a forged role=admin token is accepted.
+            tok = None
+            c = SimpleCookie(self.headers.get("Cookie", ""))
+            if "guest_token" in c:
+                tok = c["guest_token"].value
+            auth = self.headers.get("Authorization", "")
+            if auth.lower().startswith("bearer "):
+                tok = auth.split(" ", 1)[1]
+            role = None
+            if tok and tok.count(".") == 2:
+                try:
+                    body = tok.split(".")[1]
+                    role = json.loads(base64.urlsafe_b64decode(body + "=" * (-len(body) % 4))).get("role")
+                except Exception:
+                    role = None
+            if role == "admin":
+                return self.send(200, json.dumps({"panel": "admin", "secret_metrics": "revenue=1.2M", "users": 2}), "application/json")
+            return self.send(403, json.dumps({"error": "admin only"}), "application/json")
+        if p == "/redirect":
+            # Open redirect (CWE-601): no allow-list on the destination
+            return self.send(302, "", extra={"Location": q.get("next", ["/"])[0]})
+        if p == "/oauth/authorize":
+            # Reflects redirect_uri with no allow-list validation (OAuth redirect hijack)
+            ru = q.get("redirect_uri", [""])[0]
+            return self.send(302, "", extra={"Location": f"{ru}#access_token=guest" if ru else "/"})
         if p == "/api/admin/users":
             # Broken function-level authz (CWE-285): admin listing reachable by anyone, leaks all users
             return self.send(200, json.dumps([{"email": usr["email"], "name": usr["name"],
