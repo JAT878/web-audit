@@ -72,7 +72,28 @@ class H(BaseHTTPRequestHandler):
         if p == "/robots.txt":
             return self.send(200, "User-agent: *\nDisallow: /uploads/\n", "text/plain")
         if p == "/static/app.js":
-            return self.send(200, "fetch('/api/me');const o='/api/orders/';const k='/api/admin/users';", "application/javascript")
+            return self.send(200, "fetch('/api/me');const o='/api/orders/1001';const k='/api/admin/users';const f='/forgot?email=';", "application/javascript")
+        if p == "/forgot":
+            email = q.get("email", [""])[0]
+            known = any(usr["email"] == email for usr in USERS.values())
+            if known:
+                tok = "reset-" + _b64({"email": email})[:14]
+                # Reset token leaked straight back in the response body (CWE-640) + enumeration oracle
+                return self.send(200, json.dumps({"message": "Reset link sent", "reset_token": tok,
+                                 "reset_url": f"/reset?token={tok}"}), "application/json")
+            return self.send(200, json.dumps({"message": "No account with that email"}), "application/json")
+        if p.startswith("/api/orders/"):
+            oid = p.split("/")[3] if len(p.split("/")) > 3 else ""
+            if oid in ORDERS:
+                owner, text = ORDERS[oid]
+                # BOLA: JSON API returns any order with no auth / owner check (CWE-639)
+                return self.send(200, json.dumps({"id": oid, "owner": owner, "detail": text}), "application/json")
+            return self.send(404, json.dumps({"error": "not found"}), "application/json")
+        if p == "/api/admin/users":
+            # Broken function-level authz (CWE-285): admin listing reachable by anyone, leaks all users
+            return self.send(200, json.dumps([{"email": usr["email"], "name": usr["name"],
+                             "role": "admin" if usr["email"].startswith("alice") else "user"}
+                             for usr in USERS.values()]), "application/json")
         if p == "/.env":
             return self.send(200, "APP_ENV=staging\nDB_PASSWORD=supersecret123\n", "text/plain")
         if p == "/.git/HEAD":
@@ -84,7 +105,10 @@ class H(BaseHTTPRequestHandler):
             extra = {"Access-Control-Allow-Origin": origin, "Access-Control-Allow-Credentials": "true"} if origin else {}
             if not me:
                 return self.send(401, json.dumps({"error": "unauthenticated"}), "application/json", extra)
-            return self.send(200, json.dumps(me), "application/json", extra)
+            # Excessive data exposure (CWE-213): returns fields the UI never shows
+            full = {**me, "role": "user", "is_admin": False, "plan": "pro",
+                    "password_hash": "$2b$12$Xq9rLmNoPqRsTuVwXyZaBc"}
+            return self.send(200, json.dumps(full), "application/json", extra)
         if p == "/dashboard":
             if not me:
                 return self.send(302, "", extra={"Location": "/login"})
