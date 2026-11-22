@@ -69,12 +69,13 @@ Briefs to paste when spawning live in `references/agents/<name>.md`:
 | **Auth** | after recon (auth/both mode) | capability-tagged candidate findings |
 | **API** | after recon, when APIs/specs exist | candidate findings |
 | **Logic** *(optional)* | only when recon shows real workflows (cart/checkout/state machine) | candidate findings |
+| **Coverage critic** | after hunting, before the report | coverage verdict; re-hunts the gaps that matter |
 | **Validation** | per finding/chain, **siloed, in parallel** | `verified\|rejected` + one redacted repro line |
 | **Risk** | after validation | severity + combined chain impact + cheapest cut |
 | **Reporting** | after scoring | `report.md` |
 | **Review** | after the draft | `pass` or a fix-list |
 
-Sequence: Recon → parallel {Auth, API, (Logic)} → **correlate (Phase 4.5)** → parallel siloed
+Sequence: Recon → parallel {Auth, API, (Logic)} → **coverage critic (Phase 3.5)** → **correlate (Phase 4.5)** → parallel siloed
 Validation → Risk → Reporting → Review (loop back on fail). Risk *control* runs throughout:
 on `TargetDistress`, 5xx spikes, latency or scope edges, pause/stop/re-plan.
 
@@ -219,6 +220,25 @@ e.g. from `har_import.py`). `--threshold` tunes similarity when no identity mark
 Then the manual checks in `references/checks-auth.md`: session fixation/rotation on login, logout
 really invalidating server-side, timeout, CSRF on state-changing forms, mass-assignment hints,
 privilege fields (`role`, `isAdmin`) in client state, JWT weaknesses.
+
+## Phase 3.5 — Coverage ledger & critic (Component 1/4a, Coverage critic)
+
+Black-box coverage is only ever what you discovered, so "no findings" can hide a run that barely
+tested anything. Build the ledger and let a critic chase the gaps before anyone trusts the result:
+
+```
+python3 scripts/coverage.py --scope <out>/scope.json --out <out>
+```
+`coverage.py` is deterministic (no network): it reconstructs, from `recon*.json` (what exists),
+`requests.jsonl` (what was hit, by which actor) and `findings.json` (what was found), a
+`coverage-ledger.json` of every surface unit with a status (`finding` / `authz-tested` / `tested` /
+`untested`) plus flagged **gaps** (e.g. a sequential-id object never tested across two users; an
+admin endpoint never exercised as a lower-privilege actor; parameters never probed).
+
+Then spawn the **Coverage critic** (`references/agents/coverage-critic.md`): it judges each gap, sends
+a hunter back for the ones that matter (re-running the relevant detector), re-runs `coverage.py`, and
+returns a coverage verdict (`adequate` / `thin`) for the report. This is what stops a zero-coverage
+run from being reported as a clean bill of health.
 
 ## Phase 4 — Independent verification (Component 4a, Validation agents)
 
