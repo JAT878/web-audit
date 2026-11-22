@@ -49,7 +49,7 @@
         "phase": { "$ref": "#/$defs/phase" },
         "finding": {
           "type": "string",
-          "pattern": "^[A-Z]+-[a-z0-9-]+$",
+          "pattern": "^[A-Z]+-[a-z0-9_-]+$",
           "description": "Must be the id of a finding that exists in findings.json."
         },
         "grants": { "type": "array", "items": { "type": "string" } },

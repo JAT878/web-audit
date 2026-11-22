@@ -1,0 +1,78 @@
+# CI for the web-audit skill.
+#
+# NOTE: GitHub only auto-discovers workflows under the REPOSITORY-ROOT .github/workflows/.
+# This file lives inside the skill (skills/web-audit/.github/workflows/ci.yml) so it travels
+# with the skill. To activate it in a repo where the skill is a subdirectory, copy or symlink
+# it to <repo-root>/.github/workflows/web-audit-ci.yml (it already cd's into the skill dir).
+name: web-audit CI
+
+on:
+  push:
+    paths:
+      - "skills/web-audit/**"
+      - ".github/workflows/web-audit-ci.yml"
+  pull_request:
+    paths:
+      - "skills/web-audit/**"
+  workflow_dispatch:
+
+defaults:
+  run:
+    # Works whether the skill is the repo root or a subdirectory. If the skill IS the
+    # repo root, change this to "." (or remove it).
+    working-directory: skills/web-audit
+
+jobs:
+  core-and-selftest:
+    name: core + selftest (py${{ matrix.python-version }})
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        python-version: ["3.9", "3.12"]
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Python ${{ matrix.python-version }}
+        uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python-version }}
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
+
+      - name: Validate findings schema is valid JSON Schema
+        run: |
+          python -c "import json, jsonschema; s = json.load(open('schema/findings.schema.json')); jsonschema.Draft202012Validator.check_schema(s); print('schema OK')"
+
+      - name: Unit tests (frozen common.py core)
+        run: python tests/test_core.py
+
+      - name: End-to-end self-test (detectors -> correlate -> report)
+        env:
+          NO_PROXY: 127.0.0.1,localhost
+          no_proxy: 127.0.0.1,localhost
+        run: bash tests/run_selftest.sh
+
+  # Playwright is OPTIONAL (only capture_session.py browser logins use it). It is not
+  # required by test_core.py or run_selftest.sh, so it runs in a separate, non-blocking job.
+  playwright-optional:
+    name: playwright smoke (optional)
+    runs-on: ubuntu-latest
+    continue-on-error: true
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Install Playwright + Chromium
+        working-directory: skills/web-audit
+        run: |
+          python -m pip install --upgrade pip
+          pip install playwright
+          python -m playwright install --with-deps chromium
+      - name: Import smoke
+        working-directory: skills/web-audit
+        run: python -c "import playwright; print('playwright import OK')"

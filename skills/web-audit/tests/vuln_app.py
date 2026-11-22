@@ -17,7 +17,7 @@ def _b64(d):
 
 
 # Unsigned JWT, no exp, with a sensitive-looking claim
-WEAK_JWT = _b64({"alg": "none", "typ": "JWT"}) + "." + _b64({"sub": "guest", "password": "hunter2xyz"}) + "."
+WEAK_JWT = _b64({"alg": "none", "typ": "JWT"}) + "." + _b64({"sub": "guest", "role": "user", "password": "hunter2xyz"}) + "."
 
 
 class H(BaseHTTPRequestHandler):

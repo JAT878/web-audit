@@ -408,11 +408,11 @@ class Client:
 
 # ================================================================ redaction
 SECRET_PATTERNS = [
-    re.compile(r"(?i)((?:password|passwd|pwd|secret|token|api[_-]?key|access[_-]?key|private[_-]?key|client[_-]?secret|refresh[_-]?token|session[_-]?id|auth)[\"']?\s*[:=]\s*[\"']?)([^\s\"'&,<]{0,4})([^\s\"'&,<]*)"),
+    re.compile(r"(?i)((?:password|passwd|pwd|secret|token|api[_-]?key|access[_-]?key|private[_-]?key|client[_-]?secret|refresh[_-]?token|session[_-]?id|auth)[\"']?\s*[:=]\s*[\"']?)([^\s\"'&,<*]{0,4})([^\s\"'&,<*]*)"),
     re.compile(r"(?i)(authorization:\s*\w+\s+)([A-Za-z0-9._\-]{6,})"),
     re.compile(r"(?i)(bearer\s+)([A-Za-z0-9._\-]{8,})"),
     re.compile(r"(?i)(set-cookie:\s*[^=;\s]+=)([^;\s]{4,})"),
-    re.compile(r"(?i)(cookie:\s*)([^\r\n]+)"),
+    re.compile(r"(?i)(cookie:\s*)([^\r\n<]*=[^\r\n]*)"),
     re.compile(r"(eyJ[a-zA-Z0-9_-]{4})[a-zA-Z0-9_-]{6,}\.[a-zA-Z0-9_-]+\.[a-zA-Z0-9_-]*"),
     re.compile(r"((?:sk|rk)_(?:live|test)_[a-zA-Z0-9]{4})[a-zA-Z0-9]+"),
     re.compile(r"(AKIA[0-9A-Z]{4})[0-9A-Z]{12}"),
