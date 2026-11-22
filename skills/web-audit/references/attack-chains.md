@@ -4,7 +4,7 @@ This is the orchestrator's playbook for **Phase 4.5 (correlation)**. `correlate.
 deterministic graph build and proposes candidate chains (high recall). *You*, the agent, run the
 four-stage method below over the proposed set, reject the noise, and rewrite each chain's
 `combined_impact` and `remediation_priority` in prose. A chain is only `confirmed` after end-to-end
-execution (a later phase); until then it is `candidate` / `tentative`.
+execution by `chain_exec.py` (Phase 4.6); until then it is `candidate` / `tentative`.
 
 The capability model: attacker state = `{identity, knows[], can_read[], can_write[], holds[]}`.
 Every finding is a **state transition** — it `requires` some state and, if it fires, `grants` more.
@@ -98,9 +98,10 @@ is both an IDOR *and* a privilege escalation is labelled `horizontal-to-vertical
 
 ---
 
-## How to verify a chain (the proof walk — a later phase)
+## How to verify a chain (the proof walk)
 
-Verification is **execution**, not assertion. When the chain-proof phase runs:
+Verification is **execution**, not assertion. This is implemented by `scripts/chain_exec.py`
+(Phase 4.6); run it, or follow the same discipline by hand:
 
 1. **Walk the steps in the exact order of `kill_chain`**, carrying state between *real actor
    sessions* (the anonymous client, then user A, then — if forged under `allow_token_forge` purely
@@ -115,5 +116,5 @@ Verification is **execution**, not assertion. When the chain-proof phase runs:
    `verification.executed: true`. Any step that fails → the chain is `rejected` with the reason, or
    trimmed to the sub-chain that *did* execute.
 
-Until that walk happens, every chain from `correlate.py` stays `candidate` / `tentative` with
-`verification.executed: false`. Correlation proposes; execution disposes.
+Until `chain_exec.py` (or a manual walk) runs, every chain from `correlate.py` stays `candidate` /
+`tentative` with `verification.executed: false`. Correlation proposes; execution disposes.
