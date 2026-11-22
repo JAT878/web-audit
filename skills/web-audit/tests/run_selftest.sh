@@ -80,7 +80,10 @@ run_if passive_checks.py --scope "$SCOPE" --out "$OUT"
 run_if exposed_files.py  --scope "$SCOPE" --out "$OUT"
 run_if extra_checks.py   --scope "$SCOPE" --out "$OUT" --sessions "$SESS"
 run_if param_probe.py    --scope "$SCOPE" --out "$OUT"
+run_if auth_probe.py     --scope "$SCOPE" --out "$OUT" --sessions "$SESS" --session user_a
+run_if session_checks.py --scope "$SCOPE" --out "$OUT" --sessions "$SESS" --session user_a
 run_if authz_replay.py   --scope "$SCOPE" --out "$OUT" --sessions "$SESS" --id-map "$IDS"
+run_if api_checks.py     --scope "$SCOPE" --out "$OUT" --sessions "$SESS" --session user_a --other user_b --id-map "$IDS"
 
 # --- assert findings.json + expected categories (hard) ------------------------
 if [ ! -f "$OUT/findings.json" ]; then
@@ -102,6 +105,8 @@ need("broken-access-control", ["broken-access-control"])
 need("information-disclosure/sensitive-data-exposure",
      ["information-disclosure", "sensitive-data-exposure"])
 need("security-misconfiguration", ["security-misconfiguration"])
+need("authentication (enumeration/reset)", ["authentication"])
+need("session-management (fixation)", ["session-management"])
 sys.exit(0 if ok else 3)
 PYEOF
   [ $? -eq 0 ] || fail "expected categories missing from findings.json"
@@ -112,7 +117,16 @@ if [ -f "$SCRIPTS/correlate.py" ]; then
   "$PY" "$SCRIPTS/correlate.py" --findings "$OUT/findings.json" --out "$OUT" \
        --recon "$OUT/recon.json" >>"$OUT/run.log" 2>&1 \
     && pass "ran correlate.py" || fail "correlate.py exited non-zero"
-  if [ -f "$OUT/chains.json" ]; then pass "chains.json produced"
+  if [ -f "$OUT/chains.json" ]; then
+    pass "chains.json produced"
+    # The centrepiece: the planted vulns MUST correlate into at least one multi-step chain.
+    NCH="$("$PY" -c 'import json,sys;print(len(json.load(open(sys.argv[1])).get("chains",[])))' "$OUT/chains.json" 2>/dev/null || echo 0)"
+    if [ "${NCH:-0}" -ge 1 ]; then pass "correlation produced $NCH attack chain(s)"
+    else fail "correlation produced no attack chains (expected >=1 from planted vulns)"; fi
+    if [ -f "$SCRIPTS/validate_findings.py" ]; then
+      "$PY" "$SCRIPTS/validate_findings.py" "$OUT/findings.json" --chains "$OUT/chains.json" >>"$OUT/run.log" 2>&1 \
+        && pass "chains.json validates (integrity + schema)" || fail "chains.json failed validation"
+    fi
   else fail "correlate.py did not produce chains.json"; fi
 else
   skip "correlate.py not present yet (built in parallel) — chains.json not asserted"

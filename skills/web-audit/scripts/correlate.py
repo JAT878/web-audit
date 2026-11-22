@@ -63,8 +63,10 @@ _IDENTITY_USER_GRANTS = {
     "identity:assume-user", "identity:assume-admin",
     "read:other-user", "read:any-user", "read:admin",
     "write:other-user", "write:admin",
-    "session:steal", "session:fixate", "token:forge", "token:no-expiry",
+    "session:steal", "session:fixate", "token:forge",
 }
+# token:no-expiry means an existing token is long-lived — it does NOT, on its own, make the
+# attacker a user, so it must not establish identity:user (prevents nonsense token->token edges).
 _IDENTITY_ADMIN_GRANTS = {"identity:assume-admin", "read:admin", "write:admin"}
 _TOKEN_GRANTS = {"session:steal", "session:fixate", "token:forge", "token:no-expiry"}
 _IDENTITY_OR_NONE = {"none", "identity:user", "identity:admin"}
@@ -181,22 +183,32 @@ def find_paths(nodes, edges, max_len=4):
     return paths
 
 
-def dedupe(paths):
-    """Drop exact duplicates and any path that is a strict prefix (sub-path) of a longer
-    one; among remaining paths to the same terminal target, keep the longest."""
+def dedupe(paths, nodes, cap=12):
+    """Keep DISTINCT attack chains without flooding. (1) one representative per node-set;
+    (2) drop any chain whose node-set is a strict subset of another's; (3) because many
+    entries can reach the same terminal privilege (every 'become a user' finding reaches a
+    forgeable-admin token), collapse by (terminal, entry chain_role) and keep the longest
+    representative of each — so distinct attack *narratives* survive (enumerate→reset→forge,
+    IDOR→forge, BFLA→forge, fixation→forge, xss→forge) but near-duplicates don't."""
     uniq = {tuple(p): p for p in paths}
-    kept = []
-    for key, p in uniq.items():
-        if any(k != key and k[:len(key)] == key for k in uniq):  # strict prefix of another
-            continue
-        kept.append(p)
-    # Longest per terminal target (deterministic tie-break on path tuple).
-    best = {}
+    by_set: dict = {}
+    for key in uniq:
+        fs = frozenset(key)
+        if fs not in by_set or (len(key), key) < (len(by_set[fs]), tuple(by_set[fs])):
+            by_set[fs] = uniq[key]
+    sets = list(by_set.keys())
+    kept = [p for fs, p in by_set.items() if not any(fs < other for other in sets)]
+
+    def entry_role(p):
+        n = nodes.get(p[0])
+        return getattr(n, "chain_role", None) or "other"
+    groups: dict = {}
     for p in kept:
-        t = p[-1]
-        if t not in best or (len(p), tuple(p)) > (len(best[t]), tuple(best[t])):
-            best[t] = p
-    return sorted(best.values(), key=lambda p: (-len(p), tuple(p)))
+        gk = (p[-1], entry_role(p))
+        cur = groups.get(gk)
+        if cur is None or (len(p), tuple(p)) > (len(cur), tuple(cur)):
+            groups[gk] = p
+    return sorted(groups.values(), key=lambda p: (-len(p), tuple(p)))[:cap]
 
 
 # ------------------------------------------------------------------ pattern library
@@ -416,7 +428,7 @@ def main():
         edges[k].sort()
 
     paths = find_paths(nodes, edges, max_len=4)
-    paths = dedupe(paths)
+    paths = dedupe(paths, nodes)
 
     seen_ids = set()
     chains = [build_chain(p, nodes, seen_ids) for p in paths]

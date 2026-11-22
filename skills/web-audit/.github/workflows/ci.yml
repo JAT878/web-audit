@@ -54,6 +54,7 @@ jobs:
         env:
           NO_PROXY: 127.0.0.1,localhost
           no_proxy: 127.0.0.1,localhost
+          STRICT_VALIDATE: "1"
         run: bash tests/run_selftest.sh
 
   # Playwright is OPTIONAL (only capture_session.py browser logins use it). It is not

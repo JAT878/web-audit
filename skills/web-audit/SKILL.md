@@ -171,7 +171,13 @@ python3 scripts/passive_checks.py --scope <out>/scope.json --out <out> [--sessio
 python3 scripts/exposed_files.py  --scope <out>/scope.json --out <out> [--extra <paths.txt>]
 python3 scripts/extra_checks.py   --scope <out>/scope.json --out <out> [--sessions <out>/sessions.json --session user_a]
 python3 scripts/param_probe.py    --scope <out>/scope.json --out <out> [--sessions <out>/sessions.json --session user_a]
+python3 scripts/auth_probe.py     --scope <out>/scope.json --out <out> [--sessions <out>/sessions.json --session user_a]
+python3 scripts/session_checks.py --scope <out>/scope.json --out <out> [--sessions <out>/sessions.json --session user_a]
 ```
+`auth_probe.py`: user enumeration (known vs unknown account) and reset-token-in-response / weak
+reset flows (observe only — never POSTs, never consumes a reset token). `session_checks.py`:
+session fixation / no rotation (same session id for every visitor), cookie scope/lifetime; notes
+logout endpoints for manual testing (never hits them).
 `passive_checks.py`: TLS/HSTS, HTTP→HTTPS, security headers, cookie flags, CORS misconfig
 (reflected/null origin with credentials), clickjacking, version disclosure, verbose errors/stack
 traces, directory listing, and authenticated endpoints reachable anonymously.
@@ -193,8 +199,15 @@ observe, don't brute force). Use `curl` / small Python through the same rate lim
 python3 scripts/authz_replay.py --scope <out>/scope.json --out <out> \
     --sessions <out>/sessions.json --owner user_a --other user_b [--admin admin] \
     [--id-map <out>/ids.json] [--endpoints <out>/endpoints.txt] [--threshold 0.92]
+python3 scripts/api_checks.py --scope <out>/scope.json --out <out> \
+    --sessions <out>/sessions.json --session user_a --other user_b [--admin admin] [--id-map <out>/ids.json]
 ```
-Replays every endpoint `user_a` can see as `user_b`, as anonymous, and (if given) compares to
+`api_checks.py` (Component 3 — deep API security): BOLA (object-level authz on JSON APIs),
+BFLA / broken function-level authz (admin endpoints reachable by a normal user or anon), excessive
+data exposure (sensitive fields in JSON responses), and GraphQL field-authz hygiene. Reads the API
+surface recon mined; GET-only; emits the capability fields that feed correlation.
+
+`authz_replay.py` replays every endpoint `user_a` can see as `user_b`, as anonymous, and (if given) compares to
 admin-only endpoints — flagging responses that are the same when they should differ (IDOR, broken
 object/function-level authorization). For ID-based endpoints give `--id-map ids.json` (templates
 + per-user id lists; see `references/checks-auth.md`). `--endpoints` adds URLs (one per line,

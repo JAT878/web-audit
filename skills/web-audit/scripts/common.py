@@ -444,7 +444,9 @@ def redact_url(url: str) -> str:
         return url
     q = [(k, "****" if k.lower() in SENSITIVE_PARAMS else v)
          for k, v in parse_qsl(parts.query, keep_blank_values=True)]
-    return urlunsplit((parts.scheme, parts.netloc, parts.path, urlencode(q), parts.fragment))
+    # safe='*' keeps the redaction mask literal (not %2A%2A%2A%2A), so a redacted URL is
+    # idempotent under redact_url and never trips the validator's "already redacted?" check.
+    return urlunsplit((parts.scheme, parts.netloc, parts.path, urlencode(q, safe="*"), parts.fragment))
 
 
 def describe_request(resp) -> str:
