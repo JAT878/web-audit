@@ -113,6 +113,32 @@ PYEOF
   [ $? -eq 0 ] || fail "expected categories missing from findings.json"
 fi
 
+# --- coverage ledger + critic gaps -------------------------------------------
+if [ -f "$SCRIPTS/coverage.py" ]; then
+  if "$PY" "$SCRIPTS/coverage.py" --scope "$SCOPE" --out "$OUT" >>"$OUT/run.log" 2>&1; then
+    pass "ran coverage.py"
+    if [ -f "$OUT/coverage-ledger.json" ]; then
+      pass "coverage-ledger.json produced"
+      # On a FULL run the object endpoints should be covered, not flagged untested.
+      "$PY" - "$OUT/coverage-ledger.json" <<'PYEOF'
+import json, sys
+d = json.load(open(sys.argv[1]))
+units = {u["template"]: u["status"] for u in d.get("units", [])}
+ok = True
+for tpl in ("/orders/{id}",):
+    st = units.get(tpl)
+    if st in ("finding", "authz-tested"):
+        print(f"PASS: coverage: {tpl} is {st} on a full run")
+    else:
+        print(f"FAIL: coverage: {tpl} status={st} (expected finding/authz-tested)"); ok = False
+print(f"PASS: coverage summary: {d['summary']}")
+sys.exit(0 if ok else 3)
+PYEOF
+      [ $? -eq 0 ] || fail "coverage ledger did not reflect a full run"
+    else fail "coverage.py did not produce coverage-ledger.json"; fi
+  else fail "coverage.py exited non-zero"; fi
+fi
+
 # --- correlation -> chains.json (tolerant) ------------------------------------
 if [ -f "$SCRIPTS/correlate.py" ]; then
   "$PY" "$SCRIPTS/correlate.py" --findings "$OUT/findings.json" --out "$OUT" \
