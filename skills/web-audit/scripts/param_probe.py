@@ -16,13 +16,42 @@ import uuid
 from urllib.parse import urlparse, parse_qs, urlencode, urlunparse
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
-from common import Client, Findings, describe_request, excerpt, load_scope_or_exit, load_sessions, shash  # noqa: E402
+from common import (Client, Findings, asset_of, cap_fields, describe_request, excerpt,  # noqa: E402
+                    id_shape_of, load_scope_or_exit, load_sessions, shash)
 
 SQL_ERROR = re.compile(
     r"(SQLSTATE\[|You have an error in your SQL syntax|ORA-\d{5}|PG::\w+Error|psycopg2\.|"
     r"Unclosed quotation mark|Microsoft OLE DB|SQLiteException|sqlite3\.OperationalError|"
     r"org\.hibernate\.|System\.Data\.SqlClient|MySqlException|Npgsql\.|Warning: mysqli?)", re.I)
 HTML_CTX = re.compile(r"text/html", re.I)
+SESSION_COOKIE = re.compile(r"(?i)(sess|sid|auth|token|jwt|login|remember|phpsessid|jsessionid|connect\.sid)")
+
+
+def _set_cookies(resp):
+    try:
+        return resp.raw.headers.getlist("Set-Cookie")
+    except AttributeError:
+        v = resp.headers.get("Set-Cookie")
+        return [v] if v else []
+
+
+def session_cookie_lacks_httponly(resp):
+    """True only when we can positively see a session-looking cookie set WITHOUT HttpOnly.
+    Attribute names are compared case-insensitively (split on ';'), so a cookie value that
+    merely contains 'httponly' is not mistaken for the flag. Returns False when we cannot tell."""
+    if resp is None:
+        return False
+    for sc in _set_cookies(resp):
+        if not sc:
+            continue
+        parts = sc.split(";")
+        name = parts[0].split("=", 1)[0].strip()
+        if not SESSION_COOKIE.search(name):
+            continue
+        attrs = {seg.strip().split("=", 1)[0].strip().lower() for seg in parts[1:] if seg.strip()}
+        if "httponly" not in attrs:
+            return True
+    return False
 
 
 def gather_params(out_dir, scope):
@@ -37,11 +66,11 @@ def gather_params(out_dir, scope):
             qs = urlparse(pg["url"]).query
             if qs:
                 base = pg["url"].split("?")[0]
-                targets.setdefault(base, set()).update(parse_qs(qs).keys())
+                targets.setdefault(base, set()).update(parse_qs(qs, keep_blank_values=True).keys())
         for ep in recon.get("js_endpoints", []):
             if ep.startswith("/") and "?" in ep:
                 base = scope.target + ep.split("?")[0]
-                targets.setdefault(base, set()).update(parse_qs(ep.split("?", 1)[1]).keys())
+                targets.setdefault(base, set()).update(parse_qs(ep.split("?", 1)[1], keep_blank_values=True).keys())
         for form in recon.get("forms", []):
             if form.get("method", "GET").upper() != "GET":
                 continue
@@ -78,65 +107,81 @@ def main():
     xss_hits, sqli_hits = 0, 0
     F = Findings(a.out, scope.target)
 
-    for base, params in targets.items():
-        if not scope.in_scope(base) or scope.excluded(base):
-            continue
-        existing = {}  # keep other params empty; probe one at a time
-        for param in sorted(params):
-            if probed >= a.max_params:
-                break
-            probed += 1
-            tag = "zq" + uuid.uuid4().hex[:6]
-            marker = f"{tag}'\"<{tag}>"
-            url = build_url(base, param, marker, existing)
+    try:
+        for base, params in targets.items():
+            if not scope.in_scope(base) or scope.excluded(base):
+                continue
+            existing = {}  # keep other params empty; probe one at a time
+            # Baseline per client: if the unmodified page ALREADY contains a DB-error-like string,
+            # the SQL indicator is noise for this URL, so suppress it (C6).
+            base_sql_noisy = {}
             for c in clients:
-                r = c.get(url, allow_redirects=False)
-                if r is None:
-                    continue
-                body = r.text or ""
-                ctype = r.headers.get("Content-Type", "")
-                # Reflected-input indicator: our inert tag comes back verbatim in an HTML response.
-                if f"<{tag}>" in body and HTML_CTX.search(ctype):
-                    xss_hits += 1
-                    i = body.find(f"<{tag}>")
-                    F.add(id=f"XSS-reflected-{shash(base + param)}",
-                          title=f"Input reflected unescaped in HTML (parameter '{param}')",
-                          severity="medium", confidence="tentative", category="injection",
-                          auth_context=c.name if c.name != "anonymous" else "anonymous",
-                          url=url, method="GET",
-                          description=f"The value of '{param}' is returned in the HTML response without encoding "
-                                      f"(the inert marker <{tag}> appears verbatim). This is an indicator of reflected XSS; "
-                                      "confirm the exact context and whether a CSP would block execution.",
-                          impact="If the value is rendered as HTML, an attacker could run script in a victim's browser.",
-                          evidence={"request": describe_request(r), "response_status": r.status_code,
-                                    "response_excerpt": excerpt(body[max(0, i - 80):i + 120], 300),
-                                    "notes": f"Content-Type: {ctype}"},
-                          remediation="Context-encode output (HTML/attribute/JS) and add a Content-Security-Policy. Validate input server-side.",
-                          cwe="CWE-79", source="param_probe")
-                    break  # one indicator per parameter is enough
-                if SQL_ERROR.search(body):
-                    sqli_hits += 1
-                    m = SQL_ERROR.search(body)
-                    i = max(0, m.start() - 80)
-                    F.add(id=f"SQLI-error-{shash(base + param)}",
-                          title=f"Database error triggered by parameter '{param}'",
-                          severity="high", confidence="tentative", category="injection",
-                          auth_context=c.name if c.name != "anonymous" else "anonymous",
-                          url=url, method="GET",
-                          description=f"Sending a single quote in '{param}' produced a database error "
-                                      f"(matched '{m.group(0)[:40]}'). This is a strong indicator of SQL injection. "
-                                      "Do NOT run extraction payloads — confirm safely or hand to a developer.",
-                          impact="SQL injection can expose or modify the entire database.",
-                          evidence={"request": describe_request(r), "response_status": r.status_code,
-                                    "response_excerpt": excerpt(body[i:i + 200], 300)},
-                          remediation="Use parameterised queries / prepared statements everywhere; never build SQL by string concatenation.",
-                          cwe="CWE-89", source="param_probe")
+                rb = c.get(base, allow_redirects=False)
+                base_sql_noisy[c.name] = bool(rb is not None and SQL_ERROR.search(rb.text or ""))
+            for param in sorted(params):
+                if probed >= a.max_params:
                     break
-    F.save()
-    print(f"Param probe: {probed} parameters across {len(targets)} URLs; "
-          f"{xss_hits} reflected-input, {sqli_hits} SQL-error indicator(s); {F.added} new candidate findings -> {F.path}")
-    if probed == 0:
-        print("  No GET parameters found in recon — run recon.py first, or the app may use path/body params only.")
+                probed += 1
+                tag = "zq" + uuid.uuid4().hex[:6]
+                marker = f"{tag}'\"<{tag}>"
+                url = build_url(base, param, marker, existing)
+                # Probe EVERY client (anonymous and each session) — a bug may only show for one of
+                # them, and the finding id carries the context so results never collide (C6).
+                for c in clients:
+                    r = c.get(url, allow_redirects=False)
+                    if r is None:
+                        continue
+                    body = r.text or ""
+                    ctype = r.headers.get("Content-Type", "")
+                    # Reflected-input indicator: our inert tag comes back verbatim in an HTML response.
+                    if f"<{tag}>" in body and HTML_CTX.search(ctype):
+                        xss_hits += 1
+                        i = body.find(f"<{tag}>")
+                        # session:steal is only chainable when we can see the session cookie lacks
+                        # HttpOnly; otherwise it is an injection indicator with no chain grant.
+                        steal = ["session:steal"] if session_cookie_lacks_httponly(r) else None
+                        F.add(id=f"XSS-reflected-{shash(base + param)}-{c.name}",
+                              title=f"Input reflected unescaped in HTML (parameter '{param}')",
+                              severity="medium", confidence="tentative", category="injection",
+                              auth_context=c.name,
+                              url=url, method="GET",
+                              description=f"The value of '{param}' is returned in the HTML response without encoding "
+                                          f"(the inert marker <{tag}> appears verbatim). This is an indicator of reflected XSS; "
+                                          "confirm the exact context and whether a CSP would block execution.",
+                              impact="If the value is rendered as HTML, an attacker could run script in a victim's browser.",
+                              evidence={"request": describe_request(r), "response_status": r.status_code,
+                                        "response_excerpt": excerpt(body[max(0, i - 80):i + 120], 300),
+                                        "notes": f"Content-Type: {ctype}"},
+                              remediation="Context-encode output (HTML/attribute/JS) and add a Content-Security-Policy. Validate input server-side.",
+                              cwe="CWE-79", source="param_probe",
+                              **cap_fields(grants=steal, chain_role="injection",
+                                           assets=[asset_of(url)], id_shape=id_shape_of(url)))
+                    # Independent of the XSS check — a page can reflect AND error (C6: no early break).
+                    m = SQL_ERROR.search(body)
+                    if m and not base_sql_noisy.get(c.name):
+                        sqli_hits += 1
+                        i = max(0, m.start() - 80)
+                        F.add(id=f"SQLI-error-{shash(base + param)}-{c.name}",
+                              title=f"Database error triggered by parameter '{param}'",
+                              severity="high", confidence="tentative", category="injection",
+                              auth_context=c.name,
+                              url=url, method="GET",
+                              description=f"Sending a single quote in '{param}' produced a database error "
+                                          f"(matched '{m.group(0)[:40]}'). This is a strong indicator of SQL injection. "
+                                          "Do NOT run extraction payloads — confirm safely or hand to a developer.",
+                              impact="SQL injection can expose or modify the entire database.",
+                              evidence={"request": describe_request(r), "response_status": r.status_code,
+                                        "response_excerpt": excerpt(body[i:i + 200], 300)},
+                              remediation="Use parameterised queries / prepared statements everywhere; never build SQL by string concatenation.",
+                              cwe="CWE-89", source="param_probe",
+                              **cap_fields(chain_role="injection", assets=[asset_of(url)], id_shape=id_shape_of(url)))
+    finally:
+        F.save()
+        reqs = sum(cl.count for cl in clients)
+        print(f"Param probe: {reqs} requests, {probed} parameters across {len(targets)} URLs; "
+              f"{xss_hits} reflected-input, {sqli_hits} SQL-error indicator(s); {F.added} new candidate findings -> {F.path}")
+        if probed == 0:
+            print("  No GET parameters found in recon — run recon.py first, or the app may use path/body params only.")
 
 
 if __name__ == "__main__":

@@ -13,7 +13,7 @@
         "required": ["id", "title", "severity", "confidence", "status", "category",
                      "auth_context", "url", "method", "description", "evidence", "source"],
         "properties": {
-          "id": { "type": "string", "pattern": "^[A-Z]+-[a-z0-9-]+$",
+          "id": { "type": "string", "pattern": "^[A-Z]+-[a-z0-9_-]+$",
                   "description": "Stable id: CATEGORY-PREFIX + slug, e.g. HDR-missing-csp, AUTHZ-idor-orders" },
           "title": { "type": "string" },
           "severity": { "enum": ["critical", "high", "medium", "low", "info"] },
@@ -51,6 +51,40 @@
           "cwe": { "type": "string", "pattern": "^CWE-[0-9]+$" },
           "references": { "type": "array", "items": { "type": "string" } },
           "source": { "type": "string", "description": "script name or 'manual'" },
+          "grants": {
+            "type": "array",
+            "description": "Capability primitives this finding hands an attacker (correlation vocab). Optional/additive.",
+            "items": { "enum": [
+              "knowledge:user-ids", "knowledge:usernames", "knowledge:schema",
+              "knowledge:internal-host", "knowledge:secret", "knowledge:endpoint",
+              "read:other-user", "read:any-user", "read:admin",
+              "write:other-user", "write:admin",
+              "session:fixate", "session:steal", "token:forge", "token:no-expiry",
+              "identity:assume-user", "identity:assume-admin", "exec:code"
+            ] }
+          },
+          "requires": {
+            "type": "array",
+            "description": "Capability primitives an attacker must already hold to use this finding. Optional/additive.",
+            "items": { "enum": [
+              "none", "identity:user", "identity:admin",
+              "knowledge:user-ids", "knowledge:usernames", "knowledge:schema",
+              "knowledge:endpoint", "holds:token"
+            ] }
+          },
+          "assets": {
+            "type": "array",
+            "description": "Asset classes this finding touches (e.g. order, invoice, user). Edges form on a shared asset.",
+            "items": { "type": "string" }
+          },
+          "id_shape": {
+            "description": "Shape of object ids on this endpoint. 'sequential' injects an implicit knowledge grant.",
+            "enum": ["sequential", "uuid", "slug", "none"]
+          },
+          "chain_role": {
+            "description": "The role this finding plays in an attack chain.",
+            "enum": ["disclosure", "authz", "privilege", "session", "injection", "standalone"]
+          },
           "verification": {
             "type": "object",
             "properties": {

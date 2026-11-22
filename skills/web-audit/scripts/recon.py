@@ -10,6 +10,7 @@ from html.parser import HTMLParser
 from urllib.parse import urljoin, urlparse, urldefrag
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+import common  # noqa: E402
 from common import Client, load_scope_or_exit, load_sessions, now_iso  # noqa: E402
 
 STATIC_EXT = re.compile(r"\.(png|jpe?g|gif|svg|ico|webp|woff2?|ttf|eot|css|mp4|mp3|pdf|zip|map)(\?|$)", re.I)
@@ -86,6 +87,184 @@ def parse_html(html: str) -> dict:
 def norm(url: str) -> str:
     url, _ = urldefrag(url)
     return url
+
+
+# -- endpoint templating ------------------------------------------------------
+_SEG_UUID = re.compile(r"^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$", re.I)
+_SEG_NUM = re.compile(r"^\d{1,12}$")
+
+
+def path_of(u: str) -> str:
+    """Path portion of an absolute URL or a bare path/endpoint string (query/fragment stripped)."""
+    if u.startswith("/"):
+        return u.split("#", 1)[0].split("?", 1)[0]
+    pp = urlparse(u).path or "/"
+    return pp
+
+
+def templatize(path: str) -> str:
+    """Collapse numeric / UUID path segments to {id}: /orders/1001 -> /orders/{id}."""
+    segs = path.split("/")
+    out = []
+    for s in segs:
+        if s and (_SEG_NUM.match(s) or _SEG_UUID.match(s)):
+            out.append("{id}")
+        else:
+            out.append(s)
+    t = "/".join(out)
+    return t or "/"
+
+
+def build_endpoint_templates(urls):
+    """Group discovered endpoint URLs/paths by their collapsed template. asset + id_shape come
+    from the frozen common.asset_of / common.id_shape_of. Returns a list sorted by count desc."""
+    groups = {}
+    for raw in urls:
+        if not raw:
+            continue
+        p = path_of(raw)
+        if not p:
+            continue
+        tmpl = templatize(p)
+        g = groups.get(tmpl)
+        if g is None:
+            g = {"template": tmpl, "asset": common.asset_of(p), "id_shape": common.id_shape_of(p),
+                 "count": 0, "example_urls": []}
+            groups[tmpl] = g
+        g["count"] += 1
+        # Promote id_shape from "none" if a later concrete URL reveals one (uuid > sequential > none).
+        sh = common.id_shape_of(p)
+        if sh != "none" and (g["id_shape"] == "none" or (sh == "uuid" and g["id_shape"] == "sequential")):
+            g["id_shape"] = sh
+        if g["asset"] is None and common.asset_of(p):
+            g["asset"] = common.asset_of(p)
+        if raw not in g["example_urls"] and len(g["example_urls"]) < 3:
+            g["example_urls"].append(raw)
+    return sorted(groups.values(), key=lambda x: (-x["count"], x["template"]))
+
+
+def dedup_forms(forms):
+    """Collapse identical forms by (action, method, sorted input names) with a page_count (AUDIT T2)."""
+    groups, order = {}, []
+    for f in forms:
+        names = tuple(sorted((i.get("name") or "") for i in f.get("inputs", [])))
+        key = (f.get("action_abs") or f.get("action") or "", f.get("method", "GET"), names)
+        g = groups.get(key)
+        if g is None:
+            g = {"action": f.get("action", ""), "action_abs": f.get("action_abs"),
+                 "method": f.get("method", "GET"), "inputs": f.get("inputs", []), "pages": []}
+            groups[key] = g
+            order.append(key)
+        pg = f.get("page")
+        if pg and pg not in g["pages"]:
+            g["pages"].append(pg)
+    out = []
+    for key in order:
+        g = groups[key]
+        g["page_count"] = len(g["pages"]) or 1
+        g["pages"] = g["pages"][:10]
+        out.append(g)
+    return out
+
+
+def compute_auth_surface_diff(out_dir, name, templates, param_urls):
+    """If an anonymous recon.json exists, return templates/URLs that only appear authenticated."""
+    anon_path = os.path.join(out_dir, "recon.json")
+    if not os.path.exists(anon_path):
+        return None
+    try:
+        with open(anon_path, encoding="utf-8") as f:
+            anon = json.load(f)
+    except Exception:
+        return None
+    anon_tmpls = {t.get("template") for t in anon.get("endpoint_templates", [])}
+    anon_paths = {path_of(p.get("url", "")) for p in anon.get("pages", [])}
+    anon_params = set(anon.get("urls_with_params", []))
+    only = sorted({t["template"] for t in templates
+                   if t["template"] not in anon_tmpls and t["template"] not in anon_paths})
+    only_params = sorted(set(param_urls) - anon_params)
+    return {"only_when_authenticated": only, "only_when_authenticated_params": only_params, "session": name}
+
+
+def write_summary(out_dir, out, auth_diff):
+    """Concise human/agent-readable recon summary (AUDIT T1). Target ~150 lines."""
+    L = []
+    a = L.append
+    a(f"# Recon summary — {out['target']}")
+    a("")
+    a(f"- session: {out['session']}")
+    a(f"- generated: {out['generated_at']}")
+    st = out["stats"]
+    a(f"- pages crawled: {st['pages']}  |  requests: {st['requests']}")
+    a(f"- forms (deduped): {len(out['forms'])}  |  scripts: {len(out['scripts'])}  |  "
+      f"JS endpoints: {len(out['js_endpoints'])}")
+    a("")
+    # status histogram
+    hist = {}
+    for p in out["pages"]:
+        hist[p["status"]] = hist.get(p["status"], 0) + 1
+    a("## Status histogram")
+    for code in sorted(hist):
+        a(f"- {code}: {hist[code]}")
+    a("")
+    # tech
+    a("## Technology fingerprint")
+    if out["technology"]:
+        for t in out["technology"]:
+            a(f"- {t}")
+    else:
+        a("- (none detected)")
+    a("")
+    # endpoint templates
+    a("## Endpoint templates")
+    a("(asset / id_shape; `*` flags sequential ids — enumerable)")
+    for t in out["endpoint_templates"][:80]:
+        flag = " *" if t["id_shape"] == "sequential" else ""
+        asset = t["asset"] or "-"
+        a(f"- `{t['template']}` x{t['count']} [{asset} / {t['id_shape']}]{flag}")
+    a("")
+    # sensitive-object paths
+    sens = [t for t in out["endpoint_templates"] if t["asset"]]
+    a("## Sensitive-object paths (asset-bearing)")
+    if sens:
+        for t in sens[:40]:
+            flag = " *sequential" if t["id_shape"] == "sequential" else ""
+            a(f"- `{t['template']}` -> {t['asset']}{flag}")
+    else:
+        a("- (none)")
+    a("")
+    # params
+    a("## URLs carrying parameters")
+    if out["urls_with_params"]:
+        for u in out["urls_with_params"][:40]:
+            a(f"- {u}")
+    else:
+        a("- (none)")
+    a("")
+    # off-scope hosts
+    a("## Off-scope hosts (host:count)")
+    hosts = {}
+    for u in out["offscope_links"]:
+        h = urlparse(u).netloc or "?"
+        hosts[h] = hosts.get(h, 0) + 1
+    if hosts:
+        for h in sorted(hosts, key=lambda x: -hosts[x])[:40]:
+            a(f"- {h}:{hosts[h]}")
+    else:
+        a("- (none)")
+    a("")
+    # auth diff
+    if auth_diff:
+        a(f"## Auth surface diff (only when authenticated as {auth_diff['session']})")
+        rows = auth_diff["only_when_authenticated"] + [f"{u} (param)" for u in auth_diff.get("only_when_authenticated_params", [])]
+        if rows:
+            for u in rows[:40]:
+                a(f"- {u}")
+        else:
+            a("- (no new surface vs anonymous)")
+        a("")
+    with open(os.path.join(out_dir, "recon-summary.md"), "w", encoding="utf-8") as f:
+        f.write("\n".join(L) + "\n")
 
 
 def browser_crawl(scope, start_urls, session_entry, max_pages):
@@ -263,22 +442,59 @@ def main():
     for k, v in headers_seen.items():
         tech.add(f"{k}: {v}")
 
+    # -- endpoint templates: collapse numeric/UUID path segments, asset + id_shape via common
+    sorted_endpoints = sorted(endpoints)
+    template_sources = (
+        [p["url"] for p in pages]
+        + list(sitemap)
+        + [u for u in abs_urls if scope.in_scope(u)]
+        + [e for e in sorted_endpoints if e.startswith("/")]
+        + [f.get("action_abs") for f in forms if f.get("action_abs")]
+        + list(browser_api) + list(browser_links)
+    )
+    endpoint_templates = build_endpoint_templates(template_sources)
+
+    # -- URLs carrying query parameters (across pages, JS endpoints and absolute URLs)
+    param_pool = [p["url"] for p in pages] + sorted_endpoints + sorted(abs_urls) + list(browser_api)
+    from common import redact_url
+    urls_with_params = sorted({redact_url(u) for u in param_pool if isinstance(u, str) and "?" in u})
+
+    # -- deduplicate forms by (action, method, sorted input names) with a page_count (AUDIT T2)
+    deduped_forms = dedup_forms(forms)
+
     out = {
         "browser_crawl": {"used": bool(a.browser), "note": browser_note,
                           "links": browser_links[:500], "api_urls": browser_api[:500]},
         "generated_at": now_iso(), "session": name, "target": scope.target,
-        "pages": pages, "forms": forms, "scripts": sorted(scripts),
-        "js_endpoints": sorted(endpoints), "js_absolute_urls": sorted(abs_urls),
+        "pages": pages, "forms": deduped_forms, "scripts": sorted(scripts),
+        "endpoint_templates": endpoint_templates,
+        "urls_with_params": urls_with_params,
+        "js_endpoints": sorted_endpoints, "js_absolute_urls": sorted(abs_urls),
         "robots_entries": robots, "sitemap_urls": sitemap[:500],
         "technology": sorted(tech), "cookies_seen": sorted(cookies_seen),
         "redirects_to_login": redirects_to_login, "offscope_links": sorted(offscope)[:300],
-        "stats": {"requests": c.count, "pages": len(pages)},
+        "stats": {"requests": c.count, "pages": len(pages), "forms_raw": len(forms)},
     }
+
+    # -- anonymous-vs-authenticated surface diff (session runs only, if anon recon.json exists)
+    auth_diff = None
+    if name != "anonymous":
+        auth_diff = compute_auth_surface_diff(a.out, name, endpoint_templates, urls_with_params)
+        if auth_diff is not None:
+            out["auth_surface_diff"] = auth_diff
+
     fname = "recon.json" if name == "anonymous" else f"recon-{name}.json"
     with open(os.path.join(a.out, fname), "w", encoding="utf-8") as f:
         json.dump(out, f, indent=2)
-    print(f"Recon ({name}): {len(pages)} pages, {len(forms)} forms, {len(scripts)} scripts, "
-          f"{len(endpoints)} JS endpoints, {len(redirects_to_login)} login redirects -> {fname}")
+
+    # -- concise recon-summary.md (AUDIT T1) — what the agent reads instead of the full JSON
+    write_summary(a.out, out, auth_diff)
+
+    print(f"Recon ({name}): {len(pages)} pages, {len(deduped_forms)} forms ({len(forms)} raw), "
+          f"{len(scripts)} scripts, {len(endpoints)} JS endpoints, {len(endpoint_templates)} templates, "
+          f"{len(redirects_to_login)} login redirects -> {fname}")
+    if auth_diff is not None:
+        print(f"Auth surface diff vs anonymous: {len(auth_diff['only_when_authenticated'])} new template(s)")
     if tech:
         print("Tech: " + "; ".join(sorted(tech)))
 

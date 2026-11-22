@@ -7,7 +7,13 @@ audit-*/
 **/findings.json
 **/requests.jsonl
 **/recon*.json
+**/recon-summary.md
 **/authz-results.json
+**/chains.json
+**/endpoints.txt
+**/har-endpoints.json
+**/.ratelimit
+.selftest_tmp/
 
 # Python
 __pycache__/
