@@ -82,6 +82,7 @@ run_if extra_checks.py   --scope "$SCOPE" --out "$OUT" --sessions "$SESS"
 run_if param_probe.py    --scope "$SCOPE" --out "$OUT"
 run_if auth_probe.py     --scope "$SCOPE" --out "$OUT" --sessions "$SESS" --session user_a
 run_if session_checks.py --scope "$SCOPE" --out "$OUT" --sessions "$SESS" --session user_a
+run_if auth_flows.py     --scope "$SCOPE" --out "$OUT" --sessions "$SESS" --session user_a
 run_if authz_replay.py   --scope "$SCOPE" --out "$OUT" --sessions "$SESS" --id-map "$IDS"
 run_if api_checks.py     --scope "$SCOPE" --out "$OUT" --sessions "$SESS" --session user_a --other user_b --id-map "$IDS"
 
@@ -126,6 +127,17 @@ if [ -f "$SCRIPTS/correlate.py" ]; then
     if [ -f "$SCRIPTS/validate_findings.py" ]; then
       "$PY" "$SCRIPTS/validate_findings.py" "$OUT/findings.json" --chains "$OUT/chains.json" >>"$OUT/run.log" 2>&1 \
         && pass "chains.json validates (integrity + schema)" || fail "chains.json failed validation"
+    fi
+    # Chain execution in READ-ONLY mode (allow_token_forge off): must run, send no forge, and
+    # leave chains tentative. Asserts the safety default of the one active component.
+    if [ -f "$SCRIPTS/chain_exec.py" ]; then
+      if "$PY" "$SCRIPTS/chain_exec.py" --scope "$SCOPE" --out "$OUT" --chains "$OUT/chains.json" \
+           --findings "$OUT/findings.json" --sessions "$SESS" >>"$OUT/run.log" 2>&1; then
+        pass "ran chain_exec.py (read-only)"
+        if grep -q '"confidence": "confirmed"' "$OUT/chains.json"; then
+          fail "chain_exec promoted a chain to confirmed with allow_token_forge OFF (safety violation)"
+        else pass "chain_exec left chains tentative (forge gated off)"; fi
+      else fail "chain_exec.py exited non-zero"; fi
     fi
   else fail "correlate.py did not produce chains.json"; fi
 else

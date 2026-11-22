@@ -215,7 +215,17 @@ def dedupe(paths, nodes, cap=12):
 # Slugs are STABLE (referenced in chains.json `pattern` and documented in
 # references/attack-chains.md). Matched first-wins, most specific first.
 def match_pattern(chain):
-    all_grants = set().union(*[n.effective_grants() for n in chain]) if chain else set()
+    """Name the chain by its ENTRY vector and what it ultimately reaches (not the union of
+    grants), so a chain that merely passes through a session-theft step but ends in admin is
+    not mislabelled 'xss-to-session'."""
+    if not chain:
+        return None
+    all_grants = set().union(*[n.effective_grants() for n in chain])
+    entry = chain[0].effective_grants()
+    entry_role = chain[0].chain_role
+    term = chain[-1].effective_grants()
+    reaches_admin = bool(term & {"identity:assume-admin", "read:admin", "write:admin"})
+    reaches_takeover = reaches_admin or bool(term & {"identity:assume-user", "write:other-user", "exec:code"})
     has_authz = any(n.chain_role == "authz"
                     or (n.effective_grants() & {"read:any-user", "read:other-user",
                                                 "write:other-user"}) for n in chain)
@@ -223,28 +233,26 @@ def match_pattern(chain):
                    or (n.effective_grants() & {"identity:assume-admin", "read:admin",
                                                "write:admin"}) for n in chain)
 
-    if "session:steal" in all_grants:
-        return "xss-to-session"
-    if "session:fixate" in all_grants:
+    # Classify by the ENTRY weakness first.
+    if "session:fixate" in entry:
         return "fixation-to-takeover"
-    if (all_grants & {"token:forge", "token:no-expiry"}) and \
-            (all_grants & {"identity:assume-user", "identity:assume-admin"}):
+    if entry_role == "injection" or "session:steal" in entry:
+        return "xss-to-session"
+    if (entry & {"knowledge:usernames"}) and reaches_takeover:
         return "reset-flow-bypass"
-    if has_authz and has_priv:
-        return "horizontal-to-vertical"
-    if "knowledge:secret" in all_grants and \
-            (all_grants & {"identity:assume-admin", "identity:assume-user",
-                           "write:admin", "write:other-user", "exec:code"}):
+    if ("knowledge:secret" in entry) and reaches_takeover:
         return "disclosure-to-takeover"
-    if (all_grants & {"knowledge:schema", "knowledge:endpoint"}) and \
+    if (entry & {"knowledge:schema", "knowledge:endpoint"}) and \
             (all_grants & {"read:any-user", "read:other-user", "read:admin"}):
         return "schema-to-bola"
-    if (all_grants & {"knowledge:user-ids", "knowledge:usernames"}) and \
-            (all_grants & {"read:any-user", "read:other-user"}):
+    if (entry & {"knowledge:user-ids", "knowledge:usernames"}) and \
+            (all_grants & {"read:any-user", "read:other-user"}) and not reaches_admin:
         return "enumerate-then-idor"
     if (all_grants & {"read:any-user", "write:other-user"}) and \
             any("account" in n.assets or "tenant" in n.assets for n in chain):
         return "tenant-break"
+    if has_authz and has_priv:
+        return "horizontal-to-vertical"
     return None
 
 
@@ -359,6 +367,7 @@ def main():
     ap.add_argument("--findings", required=True)
     ap.add_argument("--out", required=True)
     ap.add_argument("--recon", help="optional recon.json for asset/id_shape context")
+    ap.add_argument("--baseline", help="a previous chains.json: annotate new vs still-live, report resolved")
     a = ap.parse_args()
 
     try:
@@ -434,9 +443,31 @@ def main():
     chains = [build_chain(p, nodes, seen_ids) for p in paths]
     chains.sort(key=lambda c: (-sev_index(c["severity"]), c["id"]))
 
+    # Optional cross-run regression: compare chains by their set of step findings.
+    resolved = []
+    if a.baseline and os.path.exists(a.baseline):
+        try:
+            old = json.load(open(a.baseline, encoding="utf-8")).get("chains", [])
+        except (OSError, json.JSONDecodeError):
+            old = []
+        old_sigs = {frozenset(s.get("finding") for s in c.get("kill_chain", [])): c for c in old}
+        new_sigs = set()
+        for c in chains:
+            sig = frozenset(s.get("finding") for s in c["kill_chain"])
+            new_sigs.add(sig)
+            c["regression"] = "still-live" if sig in old_sigs else "new"
+        resolved = [c for sig, c in old_sigs.items() if sig not in new_sigs]
+
     _write(out_path, target, chains)
 
     print(f"{len(chains)} candidate chain(s) -> {out_path}")
+    if a.baseline:
+        print(f"  regression vs baseline: "
+              f"{sum(1 for c in chains if c.get('regression') == 'new')} new, "
+              f"{sum(1 for c in chains if c.get('regression') == 'still-live')} still-live, "
+              f"{len(resolved)} resolved")
+        for c in resolved:
+            print(f"  RESOLVED (no longer reproduces): {c.get('id')} ({c.get('pattern', '-')})")
     for c in chains[:15]:
         print(f"  {c['id']} | {c['severity']} | {len(c['kill_chain'])} steps | "
               f"{c.get('pattern', 'no-pattern')}")

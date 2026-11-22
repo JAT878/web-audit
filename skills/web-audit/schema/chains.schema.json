@@ -76,6 +76,7 @@
         "preconditions": { "type": "string" },
         "remediation_priority": { "type": "string" },
         "pattern": { "$ref": "#/$defs/pattern" },
+        "regression": { "enum": ["new", "still-live"] },
         "verification": {
           "type": "object",
           "additionalProperties": false,

@@ -173,7 +173,10 @@ python3 scripts/extra_checks.py   --scope <out>/scope.json --out <out> [--sessio
 python3 scripts/param_probe.py    --scope <out>/scope.json --out <out> [--sessions <out>/sessions.json --session user_a]
 python3 scripts/auth_probe.py     --scope <out>/scope.json --out <out> [--sessions <out>/sessions.json --session user_a]
 python3 scripts/session_checks.py --scope <out>/scope.json --out <out> [--sessions <out>/sessions.json --session user_a]
+python3 scripts/auth_flows.py     --scope <out>/scope.json --out <out> [--sessions <out>/sessions.json --session user_a]
 ```
+`auth_flows.py`: open redirects (one benign off-site marker, `allow_redirects=False`) and
+OAuth/OIDC `redirect_uri` / missing-`state` weaknesses (observe only — never completes a flow).
 `auth_probe.py`: user enumeration (known vs unknown account) and reset-token-in-response / weak
 reset flows (observe only — never POSTs, never consumes a reset token). `session_checks.py`:
 session fixation / no rotation (same session id for every visitor), cookie scope/lifetime; notes
@@ -255,8 +258,23 @@ Then apply the **four-stage method in `references/attack-chains.md`** to prune/c
 Prune anti-patterns (different-asset steps, contradictory identities, a finding used twice,
 useless knowledge). Write combined impact and `remediation_priority` into each chain.
 
-Chains stay `confidence: tentative` unless manually confirmed — **chain EXECUTION is not in this
-build**, so no chain is auto-promoted to `confirmed`.
+Regression: pass `--baseline <prev chains.json>` to tag each chain `new` vs `still-live` and
+report chains that no longer reproduce (retest intelligence across runs).
+
+## Phase 4.6 — Chain execution (optional; verifies chains end-to-end)
+
+```
+python3 scripts/chain_exec.py --scope <out>/scope.json --out <out> \
+    --chains <out>/chains.json --findings <out>/findings.json [--sessions <out>/sessions.json] [--chain CHAIN-id]
+```
+Walks each chain's steps in order across the real actor sessions, carrying extracted artifacts
+between them, and promotes a chain to `confidence: confirmed` only when it reproduces end-to-end.
+**Read-only by default.** The one active capability — forging an `alg:none` `role=admin` token to
+*observe* whether an admin endpoint accepts it — runs **only** when the scope sets
+`allow_token_forge: true` (default false), never persists, and counts as confirmed only via a
+baseline differential (endpoint denies without the token, accepts with it). With the flag off, the
+forge step is skipped and the chain stays `tentative`. This is the prove-don't-exploit line: keep
+`allow_token_forge` off unless the engagement explicitly authorises it.
 
 ## Phase 5 — Chain-first report (Component 5, Reporting → Review)
 
